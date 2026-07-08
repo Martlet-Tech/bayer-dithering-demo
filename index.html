@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bayer 抖动演示</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f5f5f5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+  min-height: 100vh;
+}
+h1 { margin-bottom: 14px; color: #222; font-size: 20px; font-weight: 600; }
+input[type="file"] { margin-bottom: 14px; }
+
+.link-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #555;
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.switch input { display: none; }
+.switch .slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #ccc;
+  border-radius: 10px;
+  transition: background .2s;
+}
+.switch .slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  top: 2px;
+  left: 2px;
+  transition: transform .2s;
+}
+.switch input:checked + .slider { background: #2196f3; }
+.switch input:checked + .slider::after { transform: translateX(16px); }
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  width: 100%;
+  max-width: 1440px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 8px rgba(0,0,0,.08);
+  padding: 10px;
+  flex: 1 1 320px;
+  min-width: 260px;
+  max-width: 480px;
+}
+
+.card h3 {
+  text-align: center;
+  font-weight: 500;
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 4px;
+  letter-spacing: .3px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.toolbar button {
+  background: #f0f0f0;
+  border: none;
+  border-radius: 4px;
+  padding: 0 9px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 24px;
+  color: #333;
+  transition: background .1s;
+}
+.toolbar button:hover { background: #e0e0e0; }
+.toolbar button:active { background: #ccc; }
+
+.pct {
+  font-size: 12px;
+  color: #888;
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.vp {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 380px;
+  border-radius: 4px;
+  background:
+    repeating-conic-gradient(#ddd 0 25%, transparent 0 50%)
+    0 0 / 20px 20px;
+  cursor: grab;
+}
+.vp.dragging { cursor: grabbing; }
+
+.vp canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  -ms-interpolation-mode: nearest-neighbor;
+}
+</style>
+</head>
+<body>
+
+<h1>Bayer 有序抖动</h1>
+<input type="file" accept="image/*" id="upload">
+
+<div class="link-row">
+  <label class="switch">
+    <input type="checkbox" id="linkCb">
+    <span class="slider"></span>
+  </label>
+  <span>联动缩放（首次操作的窗口为基准）</span>
+</div>
+
+<div class="row">
+  <div class="card">
+    <h3>原始图</h3>
+    <div class="toolbar">
+      <button class="zo">−</button>
+      <span class="pct">--</span>
+      <button class="zi">+</button>
+      <button class="zf">适应</button>
+    </div>
+    <div class="vp"><canvas id="c0"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>灰度图</h3>
+    <div class="toolbar">
+      <button class="zo">−</button>
+      <span class="pct">--</span>
+      <button class="zi">+</button>
+      <button class="zf">适应</button>
+    </div>
+    <div class="vp"><canvas id="c1"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>Bayer 抖动</h3>
+    <div class="toolbar">
+      <button class="zo">−</button>
+      <span class="pct">--</span>
+      <button class="zi">+</button>
+      <button class="zf">适应</button>
+    </div>
+    <div class="vp"><canvas id="c2"></canvas></div>
+  </div>
+</div>
+
+<script>
+const BAYER = [
+  [ 0,  8,  2, 10],
+  [12,  4, 14,  6],
+  [ 3, 11,  1,  9],
+  [15,  7, 13,  5]
+];
+
+const upload = document.getElementById('upload');
+const canvas = [0,1,2].map(i => document.getElementById('c'+i));
+const vp = [...document.querySelectorAll('.vp')];
+
+// ── 联动开关 ──
+let linked = false;
+let linkedFirst = true;
+document.getElementById('linkCb').addEventListener('change', function() {
+  linked = this.checked;
+  linkedFirst = true;
+});
+
+function syncAllTo(idx) {
+  const ref = S[idx];
+  for (let j = 0; j < 3; j++) {
+    if (j === idx) continue;
+    S[j].zoom = ref.zoom;
+    S[j].dx = ref.dx;
+    S[j].dy = ref.dy;
+    S[j].apply();
+  }
+}
+
+function linkedZoom(i, factor, cx, cy) {
+  const ref = S[i];
+  const nz = Math.max(0.02, Math.min(64, ref.zoom * factor));
+  if (nz === ref.zoom) return;
+  const F = nz / ref.zoom;
+  const ndx = cx - (cx - ref.dx) * F;
+  const ndy = cy - (cy - ref.dy) * F;
+  for (let j = 0; j < 3; j++) {
+    S[j].zoom = nz;
+    S[j].dx = ndx;
+    S[j].dy = ndy;
+    S[j].apply();
+  }
+}
+
+// ─── 每个视口的独立状态 ────────────────────────────
+const S = [];
+
+for (let i = 0; i < 3; i++) {
+  const s = { zoom:1, dx:0, dy:0, drag:false, sx:0, sy:0, rx:0, ry:0 };
+  S[i] = s;
+  const c = canvas[i];
+  const v = vp[i];
+  const toolbar = v.parentElement.querySelector('.toolbar');
+  const pct = toolbar.querySelector('.pct');
+
+  s.apply = () => {
+    c.style.transform = `translate(${s.dx}px,${s.dy}px) scale(${s.zoom})`;
+    pct.textContent = Math.round(s.zoom * 100) + '%';
+  };
+
+  s.zoomAt = (factor, cx, cy) => {
+    const nz = Math.max(0.02, Math.min(64, s.zoom * factor));
+    if (nz === s.zoom) return;
+    s.dx = cx - (cx - s.dx) * nz / s.zoom;
+    s.dy = cy - (cy - s.dy) * nz / s.zoom;
+    s.zoom = nz;
+    s.apply();
+  };
+
+  s.fit = () => {
+    if (!c.width || !c.height) return;
+    const r = v.getBoundingClientRect();
+    const zw = r.width  / c.width;
+    const zh = r.height / c.height;
+    s.zoom = Math.min(zw, zh);
+    if (s.zoom > 1) s.zoom = 1;
+    s.dx = 0;
+    s.dy = 0;
+    s.apply();
+  };
+
+  // ── 滚轮 ──
+  v.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = v.getBoundingClientRect();
+    const cx = e.clientX - r.left;
+    const cy = e.clientY - r.top;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    if (linked) {
+      if (linkedFirst) { linkedFirst = false; syncAllTo(i); }
+      linkedZoom(i, factor, cx, cy);
+    } else {
+      s.zoomAt(factor, cx, cy);
+    }
+  }, { passive: false });
+
+  // ── 拖拽 ──
+  v.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    if (linked) {
+      if (linkedFirst) { linkedFirst = false; syncAllTo(i); }
+      for (let j = 0; j < 3; j++) {
+        S[j].drag = true;
+        S[j].sx = e.clientX;
+        S[j].sy = e.clientY;
+        S[j].rx = S[j].dx;
+        S[j].ry = S[j].dy;
+      }
+      vp.forEach(v => v.classList.add('dragging'));
+    } else {
+      s.drag = true;
+      s.sx = e.clientX;
+      s.sy = e.clientY;
+      s.rx = s.dx;
+      s.ry = s.dy;
+      v.classList.add('dragging');
+    }
+    e.preventDefault();
+  });
+
+  // ── 按钮 ──
+  toolbar.querySelector('.zo').addEventListener('click', () => {
+    const r = v.getBoundingClientRect();
+    if (linked) {
+      if (linkedFirst) { linkedFirst = false; syncAllTo(i); }
+      linkedZoom(i, 1 / 1.5, r.width / 2, r.height / 2);
+    } else {
+      s.zoomAt(1 / 1.5, r.width / 2, r.height / 2);
+    }
+  });
+  toolbar.querySelector('.zi').addEventListener('click', () => {
+    const r = v.getBoundingClientRect();
+    if (linked) {
+      if (linkedFirst) { linkedFirst = false; syncAllTo(i); }
+      linkedZoom(i, 1.5, r.width / 2, r.height / 2);
+    } else {
+      s.zoomAt(1.5, r.width / 2, r.height / 2);
+    }
+  });
+  toolbar.querySelector('.zf').addEventListener('click', () => {
+    if (linked) linkedFirst = false;
+    s.fit();
+    if (linked) syncAllTo(i);
+  });
+}
+
+// ── 全局拖拽（跨视口安全） ──
+document.addEventListener('mousemove', e => {
+  for (const s of S) {
+    if (!s.drag) continue;
+    s.dx = s.rx + (e.clientX - s.sx);
+    s.dy = s.ry + (e.clientY - s.sy);
+    s.apply();
+  }
+});
+document.addEventListener('mouseup', () => {
+  for (const s of S) {
+    if (!s.drag) continue;
+    s.drag = false;
+  }
+  vp.forEach(v => v.classList.remove('dragging'));
+});
+
+// ── 图片上传 ──────────────────────────────────────
+let currentFile = null;
+
+upload.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  currentFile = file;
+
+  const img = new Image();
+  img.onload = () => {
+    if (currentFile !== file) return;
+
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const MAX = 800;
+    const scale = Math.min(1, MAX / Math.max(W, H));
+    const w = Math.round(W * scale);
+    const h = Math.round(H * scale);
+
+    for (let i = 0; i < 3; i++) {
+      canvas[i].width  = w;
+      canvas[i].height = h;
+      canvas[i].style.width  = w + 'px';
+      canvas[i].style.height = h + 'px';
+    }
+
+    // ── 1) 原图 ──
+    const ctx0 = canvas[0].getContext('2d');
+    ctx0.drawImage(img, 0, 0, w, h);
+    const src = ctx0.getImageData(0, 0, w, h); // RGBA 像素数组
+
+    // ── 2) 灰度 & 3) Bayer 抖动 ──
+    const ctx1 = canvas[1].getContext('2d');
+    const ctx2 = canvas[2].getContext('2d');
+    const gd = ctx1.createImageData(w, h); // 灰度图的像素 buffer
+    const bd = ctx2.createImageData(w, h); // Bayer 结果的像素 buffer
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;          // 当前像素在数组中的偏移
+
+        // ── 灰度转换 ──
+        // 人眼对 RGB 敏感度不同：红 30%, 绿 59%, 蓝 11%
+        // 加权求和得到 Y（亮度），丢掉颜色信息
+        const r = src.data[i];
+        const g = src.data[i + 1];
+        const b = src.data[i + 2];
+        const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+        // 写灰度图（RGB 三个通道都设成 gray 值）
+        gd.data[i] = gd.data[i + 1] = gd.data[i + 2] = gray;
+        gd.data[i + 3] = 255;              // Alpha 通道不透明
+
+        // ── Bayer 有序抖动（Ordered Dithering）──
+        //
+        // 核心思想：每个像素的「阈值」不是固定的 128，
+        // 而是由它在 4×4 网格中的位置决定。
+        //
+        // BAYER[y & 3][x & 3]   —— 取坐标为 (x, y) 的像素落在 4×4 块中的位置
+        //                            对应的矩阵值（0 ~ 15）
+        //
+        // gray >> 4              —— 取灰度高 4 位（范围 0 ~ 15）
+        //                            相当于将 256 级灰度压缩到 16 级
+        //
+        // 比较结果：
+        //   高 4 位 > 矩阵值  →  输出白 (255)
+        //   高 4 位 ≤ 矩阵值  →  输出黑 (0)
+        //
+        // 矩阵值小的位置（如左上角 0）最容易变白，
+        // 矩阵值大的位置（如左下角 15）最容易变黑，
+        // 从而在局部区域内用黑白像素的密度「模拟」出中间灰度。
+        const bw = (gray >> 4) > BAYER[y & 3][x & 3] ? 255 : 0;
+
+        // 写 Bayer 结果图
+        bd.data[i] = bd.data[i + 1] = bd.data[i + 2] = bw;
+        bd.data[i + 3] = 255;
+      }
+    }
+
+    ctx1.putImageData(gd, 0, 0);
+    ctx2.putImageData(bd, 0, 0);
+
+    // 初始化缩放：适应视口
+    for (let i = 0; i < 3; i++) S[i].fit();
+  };
+  img.src = URL.createObjectURL(file);
+});
+</script>
+</body>
+</html>
