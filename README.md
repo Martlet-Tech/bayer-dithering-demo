@@ -1,5 +1,7 @@
 # Bayer Dithering Demo
 
+[在线演示 / Live Demo](https://martlet-tech.github.io/bayer-dithering-demo/)
+
 Bayer 有序抖动在线演示工具。上传图片即可实时对比原始图、灰度图与 Bayer 抖动（黑白）效果。
 
 ![screenshot](screenshot.png)
